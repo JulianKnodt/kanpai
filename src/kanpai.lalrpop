@@ -4,14 +4,24 @@ use crate::ast::*;
 grammar;
 
 pub Statement: Statement = {
-  "let" <i: Ident> "in" => Statement::Variable(i),
-  "unify" <l: ConstantOrIdent> "=" <r: ConstantOrIdent> "in" => Statement::Unify(l, r),
+  "let" <i: Ident> "in" => Statement::Variable(i, TyKind::Dynamic),
+
+  "let" <i: Ident> ":" <t:TyKind> "in" => Statement::Variable(i, t),
+
+  "unify" <l: LiteralOrIdent> "=" <r: LiteralOrIdent> "in" => Statement::Unify(l, r),
   "possible" <i: Ident> => Statement::Possible(i),
 }
 
-ConstantOrIdent: ConstantOrIdent = {
-  <l:Literal> => ConstantOrIdent::Constant(l),
-  <i:Ident> => ConstantOrIdent::Ident(i),
+TyKind: TyKind = {
+  "Text" => TyKind::Text,
+  "Number" => TyKind::Number,
+  // <a:TyKind> "|" <b: TyKind> => TyKind::Enum(a, b)
+  <i:Ident> => todo!(),
+}
+
+LiteralOrIdent: LiteralOrIdent = {
+  <l:Literal> => LiteralOrIdent::Literal(l),
+  <i:Ident> => LiteralOrIdent::Ident(i),
 }
 
 pub Program: Program = {
@@ -29,4 +39,6 @@ pub Program: Program = {
 Ident: Ident = <s:r"[A-Za-z][A-Za-z0-9]*"> => Ident(s.to_string());
 Literal: Literal = {
   <s:r"[0-9]+"> => Literal::I32(i32::from_str(s).unwrap()),
+  "\"" <s:"*"> "\"" => Literal::Str(s.to_string()),
 }
+

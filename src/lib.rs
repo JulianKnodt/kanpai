@@ -1,4 +1,4 @@
-#![feature(let_else)]
+#![feature(let_else, box_patterns, box_syntax)]
 
 #[allow(unused)]
 pub mod ast;
@@ -8,4 +8,4 @@ extern crate lalrpop_util;
 
 lalrpop_mod!(pub kanpai);
 
-pub use kanpai::ProgramParser;
+pub use self::kanpai::ProgramParser;

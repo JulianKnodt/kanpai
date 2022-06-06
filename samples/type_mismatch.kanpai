@@ -1,6 +1,5 @@
-let x in
-let y in
+let x: Text in
+let y: Number in
 unify x = y in
-unify x = 3 in
 possible x
 possible y
