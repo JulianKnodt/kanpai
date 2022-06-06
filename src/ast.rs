@@ -111,6 +111,10 @@ enum Constraint {
 
     /// Equality of this type to a specific value
     Eq(Literal),
+
+    /// Inequality of this type to another value
+    Neq(Literal),
+    // And(Box<Constraint>, Box<Constraint>),
 }
 
 impl Constraint {
@@ -119,6 +123,23 @@ impl Constraint {
         let result = match (self, other) {
             (None, o) | (o, None) => o.clone(),
             (Eq(l), Eq(r)) if l == r => Eq(l.clone()),
+
+            (Neq(l), Neq(r)) => {
+                if l == r {
+                    Neq(l.clone())
+                } else {
+                    todo!()
+                }
+            }
+
+            (Eq(e), Neq(n)) | (Neq(n), Eq(e)) => {
+                if e == n {
+                    return Err(());
+                } else {
+                    Eq(e.clone())
+                }
+            }
+
             _ => return Err(()),
         };
         Ok(result)
@@ -311,6 +332,7 @@ impl Display for Constraint {
         match self {
             None => write!(f, "true"),
             Eq(l) => write!(f, "= {:?}", l),
+            Neq(v) => write!(f, "!= {:?}", v),
         }
     }
 }

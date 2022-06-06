@@ -1,5 +1,5 @@
 let x: Text in
 let y: Number in
-unify x = y in
+constrain x = y in
 possible x
 possible y

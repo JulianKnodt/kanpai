@@ -8,7 +8,7 @@ pub Statement: Statement = {
 
   "let" <i: Ident> ":" <t:TyKind> "in" => Statement::Variable(i, t),
 
-  "unify" <l: LiteralOrIdent> "=" <r: LiteralOrIdent> "in" => Statement::Unify(l, r),
+  "constraint" <l: LiteralOrIdent> "=" <r: LiteralOrIdent> "in" => Statement::Unify(l, r),
   "possible" <i: Ident> => Statement::Possible(i),
 }
 

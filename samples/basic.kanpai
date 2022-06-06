@@ -1,6 +1,6 @@
 let x in
 let y in
-unify x = y in
-unify x = 3 in
+constrain x = y in
+constrain x = 3 in
 possible x
 possible y
