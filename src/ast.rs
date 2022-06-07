@@ -37,7 +37,7 @@ impl Visitor for TyUnifier {
                 for item in env.unified_items(*idx) {
                     self.walk_ref(item, env)
                 }
-                self.walk_ty(&env.type_values[env.variables[*idx].1], &env);
+                self.walk_ty(&env.type_values[env.variables[*idx].1], env);
             }
         }
     }
@@ -94,8 +94,9 @@ pub enum TyKind {
 
     Tuple(Box<Ty>, Box<Ty>),
 
+    Enum(Box<Ty>, Box<Ty>),
+
     /*
-    Enum(Ref, Ref),
     Func(Ref, Ref),
     */
     // TODO maybe include reason here?
@@ -104,24 +105,13 @@ pub enum TyKind {
 }
 
 impl TyKind {
-    fn subtype(&self, other: &Self, env: &Program) -> Self {
-        use TyKind::*;
-        match (self, other) {
-            (Dynamic, v) | (v, Dynamic) => v.clone(),
-            (a, b) if a == b => a.clone(),
-            (Never, _) | (_, Never) => TyKind::Never,
-
-            // Incomplete things
-            (Param(a), Param(b)) => todo!(),
-            (a, b) => todo!(),
-        }
-    }
-
     fn lower(self, env: &Program) -> Self {
         use TyKind::*;
         match self {
             Param(li) => Param(li.lower(env)),
             Tuple(box l, box r) => Tuple(box l.lower(env), box r.lower(env)),
+            Enum(box l, box r) => Enum(box l.lower(env), box r.lower(env)),
+
             Dynamic | Never | Number | Bool | Text => self,
         }
     }
@@ -207,12 +197,9 @@ impl Ty {
     /// Unify this type with another type
     fn unify(&self, other: &Self, env: &Program) -> Self {
         use TyKind::*;
+        // Order is important here, need to handle params first
         let kind = match (&self.kind, &other.kind) {
             (Dynamic, other) | (other, Dynamic) => other.clone(),
-            (Tuple(box l, box r), Tuple(box a, box b)) => {
-                TyKind::Tuple(box l.unify(a, env), box r.unify(b, env))
-            }
-            // If parameters are equal we do not need to do anythign more.
             (Param(a), Param(b)) if a == b => Param(a.clone()),
             (Param(p), _) => {
                 let p = p.unwrap();
@@ -232,8 +219,37 @@ impl Ty {
                 param_t.walk_ref(&Ref::Ident(p), env);
                 return self.unify(&param_t.ty, env);
             }
-            (a, b) if a != b => return Self::none(),
-            (a, b) => a.clone(),
+
+            (Enum(box a, box b), _) => {
+                let a = a.unify(other, env);
+                let b = b.unify(other, env);
+                match (&a.kind, &b.kind) {
+                    (v, Never) => return a,
+                    (Never, v) => return b,
+                    (x, y) => {
+                        if a == b {
+                            return a;
+                        } else {
+                            Enum(box a, box b)
+                        }
+                    }
+                }
+            }
+            (o, Enum(_, _)) => return other.unify(self, env),
+
+            (Tuple(box l, box r), Tuple(box a, box b)) => {
+                TyKind::Tuple(box l.unify(a, env), box r.unify(b, env))
+            }
+            (Tuple(_, _), _) | (_, Tuple(_, _)) => return Self::none(),
+
+            // If parameters are equal we do not need to do anythign more.
+            (Dynamic | Never | Text | Bool | Number, Dynamic | Never | Text | Bool | Number) => {
+                if self.kind != other.kind {
+                    return Self::none();
+                } else {
+                    self.kind.clone()
+                }
+            }
         };
         let Ok(constraints) = self.constraints.unify(&other.constraints) else {
             return Self::none();
@@ -263,7 +279,7 @@ impl Program {
         match s {
             Statement::Variable(id, ty) => {
                 let t_idx = self.type_values.len();
-                self.type_values.push(ty.lower(self).into());
+                self.type_values.push(ty.lower(self));
                 self.variables.push((id, t_idx));
             }
             Statement::Constrain(c, l, r) => {
@@ -291,7 +307,7 @@ impl Program {
             }
             Statement::Possible(id) => {
                 let possible_tys = self.satisfied_values(id.clone());
-                println!("{} : {}", id.0, TyAndProgram(possible_tys, &self));
+                println!("{} : {}", id.0, TyAndProgram(possible_tys, self));
             }
         }
         Ok(())
@@ -417,6 +433,12 @@ impl Display for TyKindAndProgram<'_> {
                     TyAndProgram(b.clone(), &self.1),
                 )
             }
+            Enum(box a, box b) => write!(
+                f,
+                "{} | {}",
+                TyAndProgram(a.clone(), &self.1),
+                TyAndProgram(b.clone(), &self.1),
+            ),
             v => panic!("Unimplemented {:?}", v),
         }
     }

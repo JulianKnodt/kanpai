@@ -27,12 +27,14 @@ TyKind: TyKind = {
   "Text" => TyKind::Text,
   "Number" => TyKind::Number,
   "Bool" => TyKind::Bool,
+  "*" => TyKind::Dynamic,
+  "!" => TyKind::Never,
 
   <i:Ident> => TyKind::Param(LowerableIdent::Ident(i)),
 
   "(" <l:Ty> "," <r:Ty> ")" => TyKind::Tuple(box l, box r),
+  "(" <l:Ty> "|" <r:Ty> ")" => TyKind::Enum(box l, box r),
 
-  // <a:TyKind> "|" <b: TyKind> => TyKind::Enum(a, b)
 }
 
 LiteralOrIdent: LiteralOrIdent = {
@@ -58,6 +60,6 @@ Literal: Literal = {
   "true" => Literal::Bool(true),
   "false" => Literal::Bool(false),
   <s:r"[0-9]+"> => Literal::I32(i32::from_str(s).unwrap()),
-  "\"" <s:"*"> "\"" => Literal::Str(s.to_string()),
+  <s:r#""[^"]*""#> => Literal::Str(s.to_string()),
 }
 

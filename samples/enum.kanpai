@@ -1,0 +1,12 @@
+let x: (4 | "test") in
+possible x
+constrain x = "test" in
+possible x
+
+let z: (4, x) in
+let y: ((x | z) | (Number | Bool)) in
+possible y
+constrain z = x in
+possible z
+
+
