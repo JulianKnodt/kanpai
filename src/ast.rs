@@ -8,7 +8,7 @@ pub struct Program {
     // questions: Vec<Question>,
     variables: Vec<(Ident, usize)>,
     // predicates: Vec<Ident>,
-    unions: Vec<(Ref, Ref)>,
+    constraints: Vec<(ConstraintKind, Ref, Ref)>,
 
     type_values: Vec<Ty>,
 }
@@ -37,27 +37,15 @@ impl Visitor for TyUnifier {
                 for item in env.unified_items(*idx) {
                     self.walk_ref(item, env)
                 }
-                self.ty = self.ty.unify(&env.type_values[env.variables[*idx].1], &env);
+                self.walk_ty(&env.type_values[env.variables[*idx].1], &env);
             }
         }
     }
     fn walk_ty(&mut self, ty: &Ty, env: &Program) {
-        let kind = match (&self.ty.kind, &ty.kind) {
-            (TyKind::Dynamic, v) | (v, TyKind::Dynamic) => v,
-            (a, b) if a == b => a,
-            // Need to handle case of unifying types with parameters later
-            (TyKind::Param(a), TyKind::Param(b)) => {
-                assert_ne!(a, b);
-                todo!()
-            }
-            _ => todo!(),
+        match &ty.kind {
+            TyKind::Param(p) => self.walk_ref(&Ref::Ident(p.unwrap()), env),
+            _ => self.ty = self.ty.unify(ty, env),
         }
-        .clone();
-        let Ok(constraints) = self.ty.constraints.unify(&ty.constraints) else {
-            self.ty = Ty::none();
-            return
-        };
-        self.ty = Ty { kind, constraints };
     }
 }
 
@@ -65,6 +53,31 @@ impl Visitor for TyUnifier {
 pub enum Ref {
     Ident(usize),
     Ty(Box<Ty>),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum LowerableIdent {
+    Idx(usize),
+    Ident(Ident),
+}
+
+impl LowerableIdent {
+    fn lower(self, env: &Program) -> Self {
+        // TODO maybe just return instead
+        let LowerableIdent::Ident(id) = self else {
+            panic!("already lowered {:?}", self);
+        };
+        let Some(idx) = env.ref_for(id.clone()) else {
+            panic!("Type parameter {} not defined", id.0);
+        };
+        LowerableIdent::Idx(idx)
+    }
+    fn unwrap(&self) -> usize {
+        let Self::Idx(i) = self else {
+            panic!("Unexpected failed unwrap {:?}", self);
+        };
+        *i
+    }
 }
 
 // TODO maybe there needs to be some way to make this modifiable
@@ -77,9 +90,9 @@ pub enum TyKind {
     Bool,
 
     /// An unbound type which can be substituted for another type.
-    Param(usize),
+    Param(LowerableIdent),
 
-    Tuple(Ref, Ref),
+    Tuple(Box<Ty>, Box<Ty>),
 
     /*
     Enum(Ref, Ref),
@@ -101,6 +114,15 @@ impl TyKind {
             // Incomplete things
             (Param(a), Param(b)) => todo!(),
             (a, b) => todo!(),
+        }
+    }
+
+    fn lower(self, env: &Program) -> Self {
+        use TyKind::*;
+        match self {
+            Param(li) => Param(li.lower(env)),
+            Tuple(box l, box r) => Tuple(box l.lower(env), box r.lower(env)),
+            Dynamic | Never | Number | Bool | Text => self,
         }
     }
 }
@@ -154,35 +176,65 @@ pub struct Ty {
 
 impl Ty {
     /// Represents any valid value
-    fn all() -> Self {
+    pub fn all() -> Self {
         Self {
             kind: TyKind::Dynamic,
             constraints: Constraint::None,
         }
     }
-    fn none() -> Self {
+    pub fn none() -> Self {
         Self {
             kind: TyKind::Never,
             constraints: Constraint::None,
         }
     }
-    fn from_literal(lit: Literal) -> Self {
-        let kind = lit.kind();
+    pub fn from_literal(lit: Literal) -> Self {
         Self {
-            kind,
+            kind: lit.kind(),
             constraints: Constraint::Eq(lit),
+        }
+    }
+
+    pub fn lower(self, env: &Program) -> Self {
+        let Self { kind, constraints } = self;
+        Self {
+            kind: kind.lower(env),
+            constraints,
         }
     }
 
     // TODO need to include env here
     /// Unify this type with another type
     fn unify(&self, other: &Self, env: &Program) -> Self {
+        use TyKind::*;
         let kind = match (&self.kind, &other.kind) {
-            (TyKind::Dynamic, other) | (other, TyKind::Dynamic) => other,
+            (Dynamic, other) | (other, Dynamic) => other.clone(),
+            (Tuple(box l, box r), Tuple(box a, box b)) => {
+                TyKind::Tuple(box l.unify(a, env), box r.unify(b, env))
+            }
+            // If parameters are equal we do not need to do anythign more.
+            (Param(a), Param(b)) if a == b => Param(a.clone()),
+            (Param(p), _) => {
+                let p = p.unwrap();
+                let mut param_t = TyUnifier {
+                    ty: env.type_values[env.variables[p].1].clone(),
+                    visited: vec![],
+                };
+                param_t.walk_ref(&Ref::Ident(p), env);
+                return param_t.ty.unify(other, env);
+            }
+            (_, Param(p)) => {
+                let p = p.unwrap();
+                let mut param_t = TyUnifier {
+                    ty: env.type_values[env.variables[p].1].clone(),
+                    visited: vec![],
+                };
+                param_t.walk_ref(&Ref::Ident(p), env);
+                return self.unify(&param_t.ty, env);
+            }
             (a, b) if a != b => return Self::none(),
-            (a, b) => a,
-        }
-        .clone();
+            (a, b) => a.clone(),
+        };
         let Ok(constraints) = self.constraints.unify(&other.constraints) else {
             return Self::none();
         };
@@ -209,24 +261,37 @@ impl Program {
     // TODO maybe it makes sense to split this into separate statements
     pub fn lower(&mut self, s: Statement) -> Result<(), String> {
         match s {
-            Statement::Variable(id, ty_kind) => {
+            Statement::Variable(id, ty) => {
                 let t_idx = self.type_values.len();
-                self.type_values.push(ty_kind.into());
+                self.type_values.push(ty.lower(self).into());
                 self.variables.push((id, t_idx));
             }
-            Statement::Unify(l, r) => {
-                match (&l, &r) {
-                    (LiteralOrIdent::Literal(l), LiteralOrIdent::Literal(r)) if l != r => {
-                        return Err(String::from("Cannot unify unequal constants"))
+            Statement::Constrain(c, l, r) => {
+                use LiteralOrIdent::Literal as Lit;
+                match (c, &l, &r) {
+                    (ConstraintKind::Eq, Lit(l), Lit(r)) => {
+                        if l == r {
+                            return Ok(());
+                        } else {
+                            return Err(String::from("Cannot unify unequal constants"));
+                        }
+                    }
+                    (ConstraintKind::Neq, Lit(l), Lit(r)) => {
+                        if l != r {
+                            return Ok(());
+                        } else {
+                            return Err(String::from("Cannot unify unequal constants"));
+                        }
                     }
                     _ => {}
                 }
                 let l = self.reify(l)?;
                 let r = self.reify(r)?;
-                self.unions.push((l, r));
+                self.constraints.push((c, l, r));
             }
             Statement::Possible(id) => {
-                println!("{} : {}", id.0.clone(), self.satisfied_values(id));
+                let possible_tys = self.satisfied_values(id.clone());
+                println!("{} : {}", id.0, TyAndProgram(possible_tys, &self));
             }
         }
         Ok(())
@@ -262,7 +327,7 @@ impl Program {
     }
     fn unified_items(&self, i: usize) -> impl Iterator<Item = &'_ Ref> + '_ {
         let i = Ref::Ident(i);
-        self.unions.iter().filter_map(move |(l, r)| {
+        self.constraints.iter().filter_map(move |(c, l, r)| {
             if *l == i {
                 Some(r)
             } else if *r == i {
@@ -277,9 +342,15 @@ impl Program {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ident(pub String);
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ConstraintKind {
+    Eq,
+    Neq,
+}
+
 pub enum Statement {
-    Variable(Ident, TyKind),
-    Unify(LiteralOrIdent, LiteralOrIdent),
+    Variable(Ident, Ty),
+    Constrain(ConstraintKind, LiteralOrIdent, LiteralOrIdent),
     Possible(Ident),
 }
 
@@ -298,30 +369,55 @@ macro_rules! impl_constant {
     }
   }
 }
-impl_constant!(I32 = i32: TyKind::Number, Str = String: TyKind::Text);
+impl_constant!(
+    I32 = i32: TyKind::Number,
+    Str = String: TyKind::Text,
+    Bool = bool: TyKind::Bool,
+);
 
-impl Display for Ty {
+impl Display for TyAndProgram<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        Display::fmt(&self.kind, f)?;
-        if matches!(self.constraints, Constraint::None) {
+        Display::fmt(&TyKindAndProgram(self.0.kind.clone(), self.1), f)?;
+        if matches!(self.0.constraints, Constraint::None) {
             return Ok(());
         }
         write!(f, " where ");
-        Display::fmt(&self.constraints, f)
+        Display::fmt(&self.0.constraints, f)
     }
 }
 
-impl Display for TyKind {
+// TODO in theory could optimize this to take references to types instead.
+pub struct TyAndProgram<'a>(Ty, &'a Program);
+pub struct TyKindAndProgram<'a>(TyKind, &'a Program);
+
+impl Display for TyKindAndProgram<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use TyKind::*;
-        match self {
+        match &self.0 {
             Number => write!(f, "Number"),
             Text => write!(f, "Text"),
             Bool => write!(f, "Bool"),
 
             Never => write!(f, "!"),
             Dynamic => write!(f, "*"),
-            _ => todo!(),
+            Param(LowerableIdent::Idx(i)) => {
+                let (ident, param_type_idx) = &self.1.variables[*i];
+                write!(
+                    f,
+                    "<{}: {}>",
+                    ident.0,
+                    TyAndProgram(self.1.type_values[*param_type_idx].clone(), &self.1)
+                )
+            }
+            Tuple(box a, box b) => {
+                write!(
+                    f,
+                    "({}, {})",
+                    TyAndProgram(a.clone(), &self.1),
+                    TyAndProgram(b.clone(), &self.1),
+                )
+            }
+            v => panic!("Unimplemented {:?}", v),
         }
     }
 }

@@ -1,0 +1,7 @@
+let X: Number in
+let y: X in
+possible y
+constrain X = 3 in
+possible X
+possible y
+

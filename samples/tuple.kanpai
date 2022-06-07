@@ -1,0 +1,11 @@
+let X in
+let Y in
+constrain Y = 4 in
+let a: (X, Number) in
+let b: (Bool, Y) in
+constrain a = b in
+possible a
+possible X
+let c: (false, 3) in
+constrain a = c in
+possible a

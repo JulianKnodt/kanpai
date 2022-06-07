@@ -4,19 +4,35 @@ use crate::ast::*;
 grammar;
 
 pub Statement: Statement = {
-  "let" <i: Ident> "in" => Statement::Variable(i, TyKind::Dynamic),
+  "let" <i: Ident> "in" => Statement::Variable(i, Ty::all()),
 
-  "let" <i: Ident> ":" <t:TyKind> "in" => Statement::Variable(i, t),
+  "let" <i: Ident> ":" <t:Ty> "in" => Statement::Variable(i, t),
 
-  "constraint" <l: LiteralOrIdent> "=" <r: LiteralOrIdent> "in" => Statement::Unify(l, r),
+  "constrain" <l: LiteralOrIdent> <c: ConstraintKind> <r: LiteralOrIdent> "in" =>
+    Statement::Constrain(c, l, r),
   "possible" <i: Ident> => Statement::Possible(i),
+}
+
+ConstraintKind: ConstraintKind = {
+  "=" => ConstraintKind::Eq,
+  "!=" => ConstraintKind::Neq,
+}
+
+Ty: Ty = {
+  <t:TyKind> => Ty::from(t),
+  <l:Literal> => Ty::from_literal(l),
 }
 
 TyKind: TyKind = {
   "Text" => TyKind::Text,
   "Number" => TyKind::Number,
+  "Bool" => TyKind::Bool,
+
+  <i:Ident> => TyKind::Param(LowerableIdent::Ident(i)),
+
+  "(" <l:Ty> "," <r:Ty> ")" => TyKind::Tuple(box l, box r),
+
   // <a:TyKind> "|" <b: TyKind> => TyKind::Enum(a, b)
-  <i:Ident> => todo!(),
 }
 
 LiteralOrIdent: LiteralOrIdent = {
@@ -37,7 +53,10 @@ pub Program: Program = {
 }
 
 Ident: Ident = <s:r"[A-Za-z][A-Za-z0-9]*"> => Ident(s.to_string());
+
 Literal: Literal = {
+  "true" => Literal::Bool(true),
+  "false" => Literal::Bool(false),
   <s:r"[0-9]+"> => Literal::I32(i32::from_str(s).unwrap()),
   "\"" <s:"*"> "\"" => Literal::Str(s.to_string()),
 }
