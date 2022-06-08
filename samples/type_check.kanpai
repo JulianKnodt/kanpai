@@ -1,0 +1,6 @@
+let a: 3 in
+let b: Number in
+constrain a = b in
+possible a
+constrain a = "example" in
+possible a

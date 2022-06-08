@@ -1,0 +1,7 @@
+let x: Text in
+let y: (x, 5) in
+let z: ("test", *) in
+constrain y = z in
+possible y
+possible x
+thus x: "test"

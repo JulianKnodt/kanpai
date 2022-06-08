@@ -1,0 +1,6 @@
+let aristotle: "Human" in
+for all : "Human" -> "Mortal"
+thus aristotle: "Mortal"
+
+let x: 3 in
+thus x: "Mortal"
