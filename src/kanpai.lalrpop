@@ -4,13 +4,20 @@ use crate::ast::*;
 grammar;
 
 pub Statement: Statement = {
-  "let" <i: Ident> "in" => Statement::Variable(i, Ty::all()),
-
-  "let" <i: Ident> ":" <t:Ty> "in" => Statement::Variable(i, t),
+  "let" <i: Ident> <t: TyAnnotation?> "in" => Statement::Variable(i, t.unwrap_or(Ty::all())),
 
   "constrain" <l: LiteralOrIdent> <c: ConstraintKind> <r: LiteralOrIdent> "in" =>
     Statement::Constrain(c, l, r),
   "possible" <i: Ident> => Statement::Possible(i),
+
+  "for" "all" <t: TyAnnotation?> "->" <to: Ty> =>
+    Statement::ForAll(t.unwrap_or(Ty::all()), to),
+  "thus" <i: Ident> <t: TyAnnotation?> =>
+    Statement::Thus(i, t.unwrap_or(Ty::all())),
+}
+
+TyAnnotation: Ty = {
+  ":" <t: Ty> => t,
 }
 
 ConstraintKind: ConstraintKind = {

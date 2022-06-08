@@ -14,8 +14,8 @@ pub struct Program {
 }
 
 pub trait Visitor {
-    fn walk_ref(&mut self, r: &Ref, env: &Program);
-    fn walk_ty(&mut self, ty: &Ty, env: &Program);
+    fn walk_ref(&mut self, r: &Ref, env: &mut Program);
+    fn walk_ty(&mut self, ty: &Ty, env: &mut Program);
 }
 
 pub struct TyUnifier {
@@ -26,7 +26,7 @@ pub struct TyUnifier {
 
 /// Unify a TyKind while walking down an ident
 impl Visitor for TyUnifier {
-    fn walk_ref(&mut self, r: &Ref, env: &Program) {
+    fn walk_ref(&mut self, r: &Ref, env: &mut Program) {
         match r {
             Ref::Ty(box t) => self.walk_ty(t, env),
             Ref::Ident(idx) => {
@@ -34,18 +34,23 @@ impl Visitor for TyUnifier {
                     return;
                 }
                 self.visited.push(*idx);
-                for item in env.unified_items(*idx) {
-                    self.walk_ref(item, env)
+                let unified_items = env.unified_items(*idx).cloned().collect::<Vec<_>>();
+                for item in unified_items {
+                    self.walk_ref(&item, env)
                 }
-                self.walk_ty(&env.type_values[env.variables[*idx].1], env);
+                let t = env.type_values[env.variables[*idx].1].clone();
+                self.walk_ty(&t, env);
             }
         }
     }
-    fn walk_ty(&mut self, ty: &Ty, env: &Program) {
-        match &ty.kind {
-            TyKind::Param(p) => self.walk_ref(&Ref::Ident(p.unwrap()), env),
-            _ => self.ty = self.ty.unify(ty, env),
+    fn walk_ty(&mut self, ty: &Ty, env: &mut Program) {
+        if let TyKind::Param(p) = &ty.kind {
+            let p = p.unwrap();
+            self.walk_ref(&Ref::Ident(p), env);
+            env.assign(p, self.ty.clone());
+            return;
         }
+        self.ty = self.ty.unify(ty, env)
     }
 }
 
@@ -114,6 +119,9 @@ impl TyKind {
 
             Dynamic | Never | Number | Bool | Text => self,
         }
+    }
+    fn is_never(&self) -> bool {
+        matches!(self, Self::Never)
     }
 }
 
@@ -193,9 +201,8 @@ impl Ty {
         }
     }
 
-    // TODO need to include env here
     /// Unify this type with another type
-    fn unify(&self, other: &Self, env: &Program) -> Self {
+    fn unify(&self, other: &Self, env: &mut Program) -> Self {
         use TyKind::*;
         // Order is important here, need to handle params first
         let kind = match (&self.kind, &other.kind) {
@@ -208,7 +215,9 @@ impl Ty {
                     visited: vec![],
                 };
                 param_t.walk_ref(&Ref::Ident(p), env);
-                return param_t.ty.unify(other, env);
+                let new_t = param_t.ty.unify(other, env);
+                env.assign(p, new_t.clone());
+                return new_t;
             }
             (_, Param(p)) => {
                 let p = p.unwrap();
@@ -217,13 +226,17 @@ impl Ty {
                     visited: vec![],
                 };
                 param_t.walk_ref(&Ref::Ident(p), env);
-                return self.unify(&param_t.ty, env);
+                let new_t = self.unify(&param_t.ty, env);
+                env.assign(p, new_t.clone());
+                return new_t;
             }
 
             (Enum(box a, box b), _) => {
-                let a = a.unify(other, env);
-                let b = b.unify(other, env);
+                let a = a.unify(other, &mut env.clone());
+                let b = b.unify(other, &mut env.clone());
                 match (&a.kind, &b.kind) {
+                    // If none match, then it is never.
+                    (Never, Never) => Never,
                     (v, Never) => return a,
                     (Never, v) => return b,
                     (x, y) => {
@@ -238,7 +251,13 @@ impl Ty {
             (o, Enum(_, _)) => return other.unify(self, env),
 
             (Tuple(box l, box r), Tuple(box a, box b)) => {
-                TyKind::Tuple(box l.unify(a, env), box r.unify(b, env))
+                let l = l.unify(a, env);
+                let r = r.unify(b, env);
+                // If both values are never, then the entire thing cannot be reached.
+                if let (Never, Never) = (&l.kind, &r.kind) {
+                    return Ty::none();
+                }
+                TyKind::Tuple(box l, box r)
             }
             (Tuple(_, _), _) | (_, Tuple(_, _)) => return Self::none(),
 
@@ -309,8 +328,33 @@ impl Program {
                 let possible_tys = self.satisfied_values(id.clone());
                 println!("{} : {}", id.0, TyAndProgram(possible_tys, self));
             }
+            Statement::ForAll(cond, then) => {
+                for &(_, t_idx) in self.variables.iter() {
+                    let mut fresh_env = self.clone();
+                    let ty = fresh_env.type_values[t_idx].clone();
+                    let matches = !cond.unify(&ty, &mut fresh_env).kind.is_never();
+                    if matches {
+                        self.type_values[t_idx] = Ty {
+                            kind: TyKind::Enum(
+                                box then.clone(),
+                                box self.type_values[t_idx].clone(),
+                            ),
+                            constraints: Constraint::None,
+                        };
+                    }
+                }
+            }
+
+            Statement::Thus(var, cond) => {
+                println!("{}", self.matches(var, cond));
+            }
         }
         Ok(())
+    }
+    fn assign(&mut self, i: usize, ty: Ty) {
+        let tyval_idx = self.type_values.len();
+        self.type_values.push(ty);
+        self.variables[i].1 = tyval_idx;
     }
     // Converts a constant or ident into a reference of a literal.
     fn reify(&mut self, v: LiteralOrIdent) -> Result<Ref, String> {
@@ -327,7 +371,14 @@ impl Program {
 
     // TODO maybe make a way to shrink it to lowest possible index?
 
-    pub fn satisfied_values(&self, of: Ident) -> Ty {
+    pub fn matches(&self, var: Ident, match_ty: Ty) -> bool {
+        let Some(idx) =  self.ref_for(var) else { return false };
+        let mut fresh_env = self.clone();
+        let ty = fresh_env.type_values[idx].clone();
+        !ty.unify(&match_ty, &mut fresh_env).kind.is_never()
+    }
+
+    pub fn satisfied_values(&mut self, of: Ident) -> Ty {
         let Some(idx) =  self.ref_for(of) else { return Ty::all(); };
 
         let ty = self.type_values[self.variables[idx].1].clone();
@@ -335,7 +386,7 @@ impl Program {
             ty,
             visited: vec![],
         };
-        valid.walk_ref(&Ref::Ident(idx), &self);
+        valid.walk_ref(&Ref::Ident(idx), self);
         valid.ty
     }
     fn ref_for(&self, i: Ident) -> Option<usize> {
@@ -368,6 +419,9 @@ pub enum Statement {
     Variable(Ident, Ty),
     Constrain(ConstraintKind, LiteralOrIdent, LiteralOrIdent),
     Possible(Ident),
+
+    ForAll(Ty, Ty),
+    Thus(Ident, Ty),
 }
 
 macro_rules! impl_constant {
@@ -380,6 +434,14 @@ macro_rules! impl_constant {
       const fn kind(&self) -> TyKind {
         match self {
           $( Self::$name(..) => $ty_kind, )+
+        }
+      }
+    }
+
+    impl Display for Literal {
+      fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+          $( Self::$name(v) => Display::fmt(v, f), )+
         }
       }
     }
@@ -397,7 +459,7 @@ impl Display for TyAndProgram<'_> {
         if matches!(self.0.constraints, Constraint::None) {
             return Ok(());
         }
-        write!(f, " where ");
+        write!(f, " ");
         Display::fmt(&self.0.constraints, f)
     }
 }
@@ -435,7 +497,7 @@ impl Display for TyKindAndProgram<'_> {
             }
             Enum(box a, box b) => write!(
                 f,
-                "{} | {}",
+                "({} | {})",
                 TyAndProgram(a.clone(), &self.1),
                 TyAndProgram(b.clone(), &self.1),
             ),
@@ -449,7 +511,7 @@ impl Display for Constraint {
         use Constraint::*;
         match self {
             None => write!(f, "true"),
-            Eq(l) => write!(f, "= {:?}", l),
+            Eq(l) => write!(f, "= {}", l),
             Neq(v) => write!(f, "!= {:?}", v),
         }
     }

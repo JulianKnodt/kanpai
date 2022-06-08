@@ -1,7 +1,7 @@
-let X: Number in
-let y: X in
+let x: Number in
+let y: x in
 possible y
-constrain X = 3 in
-possible X
+constrain x = 3 in
+possible x
 possible y
 

@@ -1,0 +1,9 @@
+let o: Number in
+let x: (o, (3, o)) in
+let y: (4, (3, 5)) in
+constrain x = y in
+possible x
+
+let z: (4, (4, 4)) in
+constrain y = z in
+possible x
